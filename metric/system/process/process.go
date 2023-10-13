@@ -191,7 +191,7 @@ func (procStats *Stats) pidFill(pid int, filter bool) (ProcState, bool, error) {
 	// OS-specific entrypoint, get basic info so we can at least run matchProcess
 	status, err := GetInfoForPid(procStats.Hostfs, pid)
 	if err != nil {
-		return status, true, fmt.Errorf("GetInfoForPid: %w", err)
+		return status, true, fmt.Errorf("========== 1 GetInfoForPid: %w", err)
 	}
 	if procStats.skipExtended {
 		return status, true, nil
