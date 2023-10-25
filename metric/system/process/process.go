@@ -21,6 +21,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -170,11 +171,11 @@ func (procStats *Stats) pidIter(pid int, procMap ProcsMap, proclist []ProcState)
 	status, saved, err := procStats.pidFill(pid, true)
 	if err != nil {
 		procStats.logger.Debugf("Error fetching PID info for %d, skipping: %s", pid, err)
-		return procMap, proclist
+		// return procMap, proclist
 	}
 	if !saved {
 		procStats.logger.Debugf("Process name does not match the provided regex; PID=%d; name=%s", pid, status.Name)
-		return procMap, proclist
+		// return procMap, proclist
 	}
 	procMap[pid] = status
 	proclist = append(proclist, status)
@@ -186,21 +187,18 @@ func (procStats *Stats) pidIter(pid int, procMap ProcsMap, proclist []ProcState)
 // This in turn calls various OS-specific code to fill out the various bits of PID data
 // This is done to minimize the code duplication between different OS implementations
 // The second return value will only be false if an event has been filtered out
+// If errors are encountered while fetching metrics, they're chained and returned
+// at the end. Regardless of errors, the PID state will always be retruned containing
+// all valid metrics that were collected.
 func (procStats *Stats) pidFill(pid int, filter bool) (ProcState, bool, error) {
 	// Fetch proc state so we can get the name for filtering based on user's filter.
 
 	// OS-specific entrypoint, get basic info so we can at least run matchProcess
 	// last non-os-specific call. Here "the problem begins"
+	var errs []error
 	status, err := GetInfoForPid(procStats.Hostfs, pid)
 	if err != nil {
-		// here put the endpoint exception
-		if status.Name == "elastic-endpoint.exe" {
-			fmt.Println(">>>>>>>>>> status.Name", status.Name)
-			fmt.Println(">>>>>>>>>>", status)
-			fmt.Println("========== Ignoring error")
-		} else {
-			return status, true, fmt.Errorf("GetInfoForPid: %w", err)
-		}
+		errs = append(errs, fmt.Errorf("GetInfoForPid: %w", err))
 	}
 	if procStats.skipExtended {
 		return status, true, nil
@@ -217,13 +215,8 @@ func (procStats *Stats) pidFill(pid int, filter bool) (ProcState, bool, error) {
 	// If we've passed the filter, continue to fill out the rest of the metrics
 	status, err = FillPidMetrics(procStats.Hostfs, pid, status, procStats.isWhitelistedEnvVar)
 	if err != nil {
-		if status.Name == "elastic-endpoint.exe" {
-			fmt.Println(">>>>>>>>>> status.Name", status.Name)
-			fmt.Println(">>>>>>>>>>", status)
-			fmt.Println("========== Ignoring error")
-		} else {
-			return status, true, fmt.Errorf("FillPidMetrics: %w", err)
-		}
+		errs = append(errs, fmt.Errorf("FillPidMetrics: %w", err))
+		return status, true, errors.Join(errs...)
 	}
 	if len(status.Args) > 0 && status.Cmdline == "" {
 		status.Cmdline = strings.Join(status.Args, " ")
@@ -235,7 +228,7 @@ func (procStats *Stats) pidFill(pid int, filter bool) (ProcState, bool, error) {
 	if procStats.EnableCgroups {
 		cgStats, err := procStats.cgroups.GetStatsForPid(status.Pid.ValueOr(0))
 		if err != nil {
-			return status, true, fmt.Errorf("cgroups.GetStatsForPid: %w", err)
+			errs = append(errs, fmt.Errorf("cgroups.GetStatsForPid: %w", err))
 		}
 		status.Cgroup = cgStats
 		if ok {
@@ -248,7 +241,8 @@ func (procStats *Stats) pidFill(pid int, filter bool) (ProcState, bool, error) {
 		procHandle, err := sysinfo.Process(pid)
 		// treat this as a soft error
 		if err != nil {
-			procStats.logger.Debugf("error initializing process handler for pid %d while trying to fetch network data: %w", pid, err)
+			procStats.logger.Debugf(
+				"error initializing process handler for pid %d while trying to fetch network data: %w", pid, err)
 		} else {
 			procNet, ok := procHandle.(sysinfotypes.NetworkCounters)
 			if ok {
@@ -267,7 +261,7 @@ func (procStats *Stats) pidFill(pid int, filter bool) (ProcState, bool, error) {
 		status = GetProcCPUPercentage(last, status)
 	}
 
-	return status, true, nil
+	return status, true, errors.Join(errs...)
 }
 
 // cacheCmdLine fills out Env and arg metrics from any stored previous metrics for the pid

@@ -72,18 +72,11 @@ func GetInfoForPid(_ resolve.Resolver, pid int) (ProcState, error) {
 		state.State = status
 	}
 
-	if numThreads, err := FetchNumThreads(pid); err != nil {
-		errs = append(errs, fmt.Errorf("error fetching num threads: %w", err))
-	} else {
-		state.NumThreads = opt.IntWith(numThreads)
-	}
-
-	if err := errors.Join(errs...); err != nil {
-		return state, fmt.Errorf("could not get all information for PID %d: %w",
-			pid, err)
-	}
-
-	return state, nil
+	return state,
+		errors.Join(
+			append(
+				[]error{fmt.Errorf("could not get all information for PID %d", pid)},
+				errs...)...)
 }
 
 func FetchNumThreads(pid int) (int, error) {
@@ -114,9 +107,10 @@ func FetchNumThreads(pid int) (int, error) {
 
 // FillPidMetrics is the windows implementation
 func FillPidMetrics(_ resolve.Resolver, pid int, state ProcState, _ func(string) bool) (ProcState, error) {
+	var errs []error
 	user, err := getProcCredName(pid)
 	if err != nil {
-		return state, fmt.Errorf("error fetching username: %w", err)
+		errs = append(errs, fmt.Errorf("error fetching username: %w", err))
 	}
 	state.Username = user
 
@@ -132,7 +126,7 @@ func FillPidMetrics(_ resolve.Resolver, pid int, state ProcState, _ func(string)
 
 	userTime, sysTime, startTime, err := getProcTimes(pid)
 	if err != nil {
-		return state, fmt.Errorf("error getting CPU times: %w", err)
+		errs = append(errs, fmt.Errorf("error getting CPU times: %w", err))
 	}
 
 	state.CPU.System.Ticks = opt.UintWith(sysTime)
@@ -143,10 +137,17 @@ func FillPidMetrics(_ resolve.Resolver, pid int, state ProcState, _ func(string)
 
 	argList, err := getProcArgs(pid)
 	if err != nil {
-		return state, fmt.Errorf("error fetching process args: %w", err)
+		errs = append(errs, fmt.Errorf("error fetching process args: %w", err))
 	}
+
+	if numThreads, err := FetchNumThreads(pid); err != nil {
+		errs = append(errs, fmt.Errorf("error fetching num threads: %w", err))
+	} else {
+		state.NumThreads = opt.IntWith(numThreads)
+	}
+
 	state.Args = argList
-	return state, nil
+	return state, errors.Join(errs...)
 }
 
 func getProcArgs(pid int) ([]string, error) {
